@@ -12,7 +12,7 @@ it('on function error', async () => {
 
   let error: any
 
-  const _bob = createBirpc<AliceFunctions, BobFunctions>(
+  const _bob = createBirpc<AliceFunctions>(
     { ...Bob },
     {
       post: data => channel.port1.postMessage(data),
@@ -23,7 +23,7 @@ it('on function error', async () => {
     },
   )
 
-  const alice = createBirpc<BobFunctions, AliceFunctions>(
+  const alice = createBirpc<BobFunctions>(
     { ...Alice },
     {
       // mark bob's `bump` as an event without response
@@ -56,7 +56,7 @@ it('on serialize error', async () => {
 
   let error: any
 
-  const _bob = createBirpc<AliceFunctions, BobFunctions>(
+  const _bob = createBirpc<AliceFunctions>(
     { ...Bob },
     {
       serialize: (d) => {
@@ -73,7 +73,7 @@ it('on serialize error', async () => {
     },
   )
 
-  const alice = createBirpc<BobFunctions, AliceFunctions>(
+  const alice = createBirpc<BobFunctions>(
     { ...Alice },
     {
       // mark bob's `bump` as an event without response
@@ -104,7 +104,7 @@ it('on parse error', async () => {
 
   let error: any
 
-  const _bob = createBirpc<AliceFunctions, BobFunctions>(
+  const _bob = createBirpc<AliceFunctions>(
     { ...Bob },
     {
       deserialize: () => {
@@ -119,7 +119,7 @@ it('on parse error', async () => {
     },
   )
 
-  const alice = createBirpc<BobFunctions, AliceFunctions>(
+  const alice = createBirpc<BobFunctions>(
     { ...Alice },
     {
       // mark bob's `bump` as an event without response
@@ -150,7 +150,7 @@ it('on async post error', async () => {
 
   let error: any
 
-  const _bob = createBirpc<AliceFunctions, BobFunctions>(
+  const _bob = createBirpc<AliceFunctions>(
     { ...Bob },
     {
       post: data => channel.port1.postMessage(data),
@@ -158,7 +158,7 @@ it('on async post error', async () => {
     },
   )
 
-  const alice = createBirpc<BobFunctions, AliceFunctions>(
+  const alice = createBirpc<BobFunctions>(
     { ...Alice },
     {
       // mark bob's `bump` as an event without response

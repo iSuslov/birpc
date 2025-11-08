@@ -117,7 +117,7 @@ export interface BirpcGroupFn<T> {
   asEvent: (...args: ArgumentsType<T>) => Promise<void>
 }
 
-export type BirpcReturn<RemoteFunctions, LocalFunctions = Record<string, never>> = {
+export type BirpcReturn<RemoteFunctions, LocalFunctions = Record<string, unknown>> = {
   [K in keyof RemoteFunctions]: BirpcFn<RemoteFunctions[K]>
 } & {
   $functions: LocalFunctions
@@ -132,7 +132,7 @@ export type BirpcGroupReturn<RemoteFunctions> = {
   [K in keyof RemoteFunctions]: BirpcGroupFn<RemoteFunctions[K]>
 }
 
-export interface BirpcGroup<RemoteFunctions, LocalFunctions = Record<string, never>> {
+export interface BirpcGroup<RemoteFunctions, LocalFunctions = Record<string, unknown>> {
   readonly clients: BirpcReturn<RemoteFunctions, LocalFunctions>[]
   readonly functions: LocalFunctions
   readonly broadcast: BirpcGroupReturn<RemoteFunctions>
@@ -200,7 +200,7 @@ const defaultDeserialize = defaultSerialize
 const { clearTimeout, setTimeout } = globalThis
 const random = Math.random.bind(Math)
 
-export function createBirpc<RemoteFunctions = Record<string, never>, LocalFunctions extends object = Record<string, never>>(
+export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunctions extends object = Record<string, unknown>>(
   functions: LocalFunctions,
   options: BirpcOptions<RemoteFunctions>,
 ): BirpcReturn<RemoteFunctions, LocalFunctions> {
@@ -440,7 +440,7 @@ export function cachedMap<T, R>(items: T[], fn: ((i: T) => R)): R[] {
   })
 }
 
-export function createBirpcGroup<RemoteFunctions = Record<string, never>, LocalFunctions extends object = Record<string, never>>(
+export function createBirpcGroup<RemoteFunctions = Record<string, unknown>, LocalFunctions extends object = Record<string, unknown>>(
   functions: LocalFunctions,
   channels: ChannelOptions[] | (() => ChannelOptions[]),
   options: EventOptions<RemoteFunctions> = {},

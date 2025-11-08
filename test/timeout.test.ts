@@ -10,7 +10,7 @@ type BobFunctions = typeof Bob
 it('timeout', async () => {
   const channel = new MessageChannel()
 
-  const bob = createBirpc<AliceFunctions, BobFunctions>(
+  const bob = createBirpc<AliceFunctions>(
     Bob,
     {
       post: data => channel.port1.postMessage(data),
@@ -32,7 +32,7 @@ it('custom onTimeoutError', async () => {
   const channel = new MessageChannel()
   const onTimeout = vi.fn()
 
-  const bob = createBirpc<AliceFunctions, BobFunctions>(
+  const bob = createBirpc<AliceFunctions>(
     Bob,
     {
       post: data => channel.port1.postMessage(data),
@@ -59,7 +59,7 @@ it('custom onTimeoutError without custom error', async () => {
   const channel = new MessageChannel()
   const onTimeout = vi.fn()
 
-  const bob = createBirpc<AliceFunctions, BobFunctions>(
+  const bob = createBirpc<AliceFunctions>(
     Bob,
     {
       post: data => channel.port1.postMessage(data),

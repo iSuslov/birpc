@@ -20,7 +20,7 @@ function createChannel(options: {
   const { onRequest = () => {} } = options
   return {
     channel,
-    alice: createBirpc<BobFunctions, AliceFunctions>(
+    alice: createBirpc<BobFunctions>(
       Alice,
       {
         onRequest,
@@ -30,7 +30,7 @@ function createChannel(options: {
         },
       },
     ),
-    bob: createBirpc<AliceFunctions, BobFunctions>(
+    bob: createBirpc<AliceFunctions>(
       Bob,
       {
         post: (data) => {

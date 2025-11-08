@@ -11,7 +11,7 @@ function createChannel() {
   const channel = new MessageChannel()
   return {
     channel,
-    alice: createBirpc<BobFunctions, AliceFunctions>(
+    alice: createBirpc<BobFunctions>(
       Alice,
       {
         // mark bob's `bump` as an event without response
@@ -20,7 +20,7 @@ function createChannel() {
         on: fn => channel.port2.on('message', fn),
       },
     ),
-    bob: createBirpc<AliceFunctions, BobFunctions>(
+    bob: createBirpc<AliceFunctions>(
       Bob,
       {
         post: data => channel.port1.postMessage(data),
