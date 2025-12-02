@@ -117,20 +117,73 @@ export interface BirpcGroupFn<T> {
   asEvent: (...args: ArgumentsType<T>) => Promise<void>
 }
 
-export type BirpcReturn<RemoteFunctions, LocalFunctions = Record<string, unknown>> = {
-  [K in keyof RemoteFunctions]: BirpcFn<RemoteFunctions[K]>
-} & {
+export interface BirpcReturnBuiltin<
+  RemoteFunctions,
+  LocalFunctions = Record<string, unknown>,
+> {
+  /**
+   * Raw functions object
+   */
   $functions: LocalFunctions
+  /**
+   * Whether the RPC is closed
+   */
+  readonly $closed: boolean
+  /**
+   * Close the RPC connection
+   */
   $close: (error?: Error) => void
-  $closed: boolean
+  /**
+   * Reject pending calls
+   */
   $rejectPendingCalls: (handler?: PendingCallHandler) => Promise<void>[]
+  /**
+   * Call the remote function and wait for the result.
+   * An alternative to directly calling the function
+   */
+  $call: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<Awaited<ReturnType<RemoteFunctions[K]>>>
+  /**
+   * Same as `$call`, but returns `undefined` if the function is not defined on the remote side.
+   */
+  $callOptional: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<Awaited<ReturnType<RemoteFunctions[K]> | undefined>>
+  /**
+   * Send event without asking for response
+   */
+  $callEvent: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<void>
+  /**
+   * Call the remote function with the raw options.
+   */
+  $callRaw: (options: { method: string, args: unknown[], event?: boolean, optional?: boolean }) => Promise<Awaited<ReturnType<any>>[]>
 }
+
+export type BirpcReturn<
+  RemoteFunctions,
+  LocalFunctions = Record<string, unknown>,
+> = {
+  [K in keyof RemoteFunctions]: BirpcFn<RemoteFunctions[K]>
+} & BirpcReturnBuiltin<RemoteFunctions, LocalFunctions>
 
 type PendingCallHandler = (options: Pick<PromiseEntry, 'method' | 'reject'>) => void | Promise<void>
 
+export interface BirpcGroupReturnBuiltin<RemoteFunctions> {
+  /**
+   * Call the remote function and wait for the result.
+   * An alternative to directly calling the function
+   */
+  $call: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<Awaited<ReturnType<RemoteFunctions[K]>>>
+  /**
+   * Same as `$call`, but returns `undefined` if the function is not defined on the remote side.
+   */
+  $callOptional: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<Awaited<ReturnType<RemoteFunctions[K]> | undefined>>
+  /**
+   * Send event without asking for response
+   */
+  $callEvent: <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) => Promise<void>
+}
+
 export type BirpcGroupReturn<RemoteFunctions> = {
   [K in keyof RemoteFunctions]: BirpcGroupFn<RemoteFunctions[K]>
-}
+} & BirpcGroupReturnBuiltin<RemoteFunctions>
 
 export interface BirpcGroup<RemoteFunctions, LocalFunctions = Record<string, unknown>> {
   readonly clients: BirpcReturn<RemoteFunctions, LocalFunctions>[]
@@ -166,6 +219,10 @@ interface Request {
    * Arguments
    */
   a: any[]
+  /**
+   * Optional
+   */
+  o?: boolean
 }
 
 interface Response {
@@ -201,7 +258,7 @@ const { clearTimeout, setTimeout } = globalThis
 const random = Math.random.bind(Math)
 
 export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunctions extends object = Record<string, unknown>>(
-  functions: LocalFunctions,
+  $functions: LocalFunctions,
   options: BirpcOptions<RemoteFunctions>,
 ): BirpcReturn<RemoteFunctions, LocalFunctions> {
   const {
@@ -216,107 +273,137 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
     timeout = DEFAULT_TIMEOUT,
   } = options
 
-  const rpcPromiseMap = new Map<string, PromiseEntry>()
+  let $closed = false
 
+  const _rpcPromiseMap = new Map<string, PromiseEntry>()
   let _promiseInit: Promise<any> | any
-  let closed = false
+
+  async function _call(
+    method: string,
+    args: unknown[],
+    event?: boolean,
+    optional?: boolean,
+  ) {
+    if ($closed)
+      throw new Error(`[birpc] rpc is closed, cannot call "${method}"`)
+
+    const req: Request = { m: method, a: args, t: TYPE_REQUEST }
+    if (optional)
+      req.o = true
+
+    const send = async (_req: Request) => post(serialize(_req))
+    if (event) {
+      await send(req)
+      return
+    }
+
+    if (_promiseInit) {
+      // Wait if `on` is promise
+      try {
+        await _promiseInit
+      }
+      finally {
+        // don't keep resolved promise hanging
+        _promiseInit = undefined
+      }
+    }
+
+    // eslint-disable-next-line prefer-const
+    let { promise, resolve, reject } = createPromiseWithResolvers<any>()
+
+    const id = nanoid()
+    req.i = id
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    async function handler(newReq: Request = req) {
+      if (timeout >= 0) {
+        timeoutId = setTimeout(() => {
+          try {
+            // Custom onTimeoutError handler can throw its own error too
+            const handleResult = options.onTimeoutError?.(method, args)
+            if (handleResult !== true)
+              throw new Error(`[birpc] timeout on calling "${method}"`)
+          }
+          catch (e) {
+            reject(e)
+          }
+          _rpcPromiseMap.delete(id)
+        }, timeout)
+
+        // For node.js, `unref` is not available in browser-like environments
+        if (typeof timeoutId === 'object')
+          timeoutId = timeoutId.unref?.()
+      }
+
+      _rpcPromiseMap.set(id, { resolve, reject, timeoutId, method })
+      await send(newReq)
+      return promise
+    }
+
+    try {
+      if (options.onRequest)
+        await options.onRequest(req, handler, resolve)
+      else
+        await handler()
+    }
+    catch (e) {
+      if (options.onGeneralError?.(e as Error) !== true)
+        throw e
+      return
+    }
+    finally {
+      clearTimeout(timeoutId)
+      _rpcPromiseMap.delete(id)
+    }
+
+    return promise
+  }
+
+  const $call = <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) =>
+    _call(method as string, args, false)
+  const $callOptional = <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) =>
+    _call(method as string, args, false, true)
+  const $callEvent = <K extends keyof RemoteFunctions>(method: K, ...args: ArgumentsType<RemoteFunctions[K]>) =>
+    _call(method as string, args, true)
+  const $callRaw = (options: { method: string, args: unknown[], event?: boolean, optional?: boolean }) =>
+    _call(options.method, options.args, options.event, options.optional)
+
+  const builtinMethods = {
+    $call,
+    $callOptional,
+    $callEvent,
+    $callRaw,
+    $rejectPendingCalls,
+    get $closed() {
+      return $closed
+    },
+    $close,
+    $functions,
+  }
 
   const rpc = new Proxy({}, {
     get(_, method: string) {
-      if (method === '$functions')
-        return functions
-
-      if (method === '$close')
-        return close
-
-      if (method === '$rejectPendingCalls') {
-        return rejectPendingCalls
-      }
-
-      if (method === '$closed')
-        return closed
+      if (Object.prototype.hasOwnProperty.call(builtinMethods, method))
+        return (builtinMethods as any)[method]
 
       // catch if "createBirpc" is returned from async function
-      if (method === 'then' && !eventNames.includes('then' as any) && !('then' in functions))
+      if (method === 'then' && !eventNames.includes('then' as any) && !('then' in $functions))
         return undefined
 
-      const sendEvent = async (...args: any[]) => {
-        await post(serialize(<Request>{ m: method, a: args, t: TYPE_REQUEST }))
-      }
+      const sendEvent = (...args: any[]) => _call(method, args, true)
       if (eventNames.includes(method as any)) {
         sendEvent.asEvent = sendEvent
         return sendEvent
       }
-      const sendCall = async (...args: any[]) => {
-        if (closed)
-          throw new Error(`[birpc] rpc is closed, cannot call "${method}"`)
-        if (_promiseInit) {
-          // Wait if `on` is promise
-          try {
-            await _promiseInit
-          }
-          finally {
-            // don't keep resolved promise hanging
-            _promiseInit = undefined
-          }
-        }
-
-        // eslint-disable-next-line prefer-const
-        let { promise, resolve, reject } = createPromiseWithResolvers<any>()
-
-        const id = nanoid()
-        let timeoutId: ReturnType<typeof setTimeout> | undefined
-        const _req: Request = { m: method, a: args, i: id, t: TYPE_REQUEST }
-
-        async function handler(req: Request = _req) {
-          if (timeout >= 0) {
-            timeoutId = setTimeout(() => {
-              try {
-                // Custom onTimeoutError handler can throw its own error too
-                const handleResult = options.onTimeoutError?.(method, args)
-                if (handleResult !== true)
-                  throw new Error(`[birpc] timeout on calling "${method}"`)
-              }
-              catch (e) {
-                reject(e)
-              }
-              rpcPromiseMap.delete(id)
-            }, timeout)
-
-            // For node.js, `unref` is not available in browser-like environments
-            if (typeof timeoutId === 'object')
-              timeoutId = timeoutId.unref?.()
-          }
-
-          rpcPromiseMap.set(id, { resolve, reject, timeoutId, method })
-          await post(serialize(req))
-          return promise
-        }
-
-        try {
-          if (options.onRequest)
-            await options.onRequest(_req, handler, resolve)
-          else
-            await handler()
-        }
-        catch (e) {
-          clearTimeout(timeoutId)
-          rpcPromiseMap.delete(id)
-          if (options.onGeneralError?.(e as Error) !== true)
-            throw e
-          return
-        }
-
-        return promise
-      }
+      const sendCall = (...args: any[]) => _call(method, args, false)
       sendCall.asEvent = sendEvent
       return sendCall
     },
   }) as BirpcReturn<RemoteFunctions, LocalFunctions>
 
-  function close(customError?: Error) {
-    closed = true
-    rpcPromiseMap.forEach(({ reject, method }) => {
+  function $close(customError?: Error) {
+    $closed = true
+    _rpcPromiseMap.forEach(({ reject, method }) => {
       const error = new Error(`[birpc] rpc is closed, cannot call "${method}"`)
 
       if (customError) {
@@ -326,12 +413,12 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
 
       reject(error)
     })
-    rpcPromiseMap.clear()
+    _rpcPromiseMap.clear()
     off(onMessage)
   }
 
-  function rejectPendingCalls(handler?: PendingCallHandler) {
-    const entries = Array.from(rpcPromiseMap.values())
+  function $rejectPendingCalls(handler?: PendingCallHandler) {
+    const entries = Array.from(_rpcPromiseMap.values())
 
     const handlerResults = entries.map(({ method, reject }) => {
       if (!handler) {
@@ -341,7 +428,7 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
       return handler({ method, reject })
     })
 
-    rpcPromiseMap.clear()
+    _rpcPromiseMap.clear()
 
     return handlerResults
   }
@@ -359,18 +446,21 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
     }
 
     if (msg.t === TYPE_REQUEST) {
-      const { m: method, a: args } = msg
+      const { m: method, a: args, o: optional } = msg
       let result, error: any
-      const fn = await (resolver
-        ? resolver(method, (functions as any)[method])
-        : (functions as any)[method])
+      let fn = await (resolver
+        ? resolver(method, ($functions as any)[method])
+        : ($functions as any)[method])
+
+      if (optional)
+        fn ||= () => undefined
 
       if (!fn) {
         error = new Error(`[birpc] function "${method}" not found`)
       }
       else {
         try {
-          result = await fn.apply(bind === 'rpc' ? rpc : functions, args)
+          result = await fn.apply(bind === 'rpc' ? rpc : $functions, args)
         }
         catch (e) {
           error = e
@@ -410,7 +500,7 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
     }
     else {
       const { i: ack, r: result, e: error } = msg
-      const promise = rpcPromiseMap.get(ack)
+      const promise = _rpcPromiseMap.get(ack)
       if (promise) {
         clearTimeout(promise.timeoutId)
 
@@ -419,7 +509,7 @@ export function createBirpc<RemoteFunctions = Record<string, unknown>, LocalFunc
         else
           promise.resolve(result)
       }
-      rpcPromiseMap.delete(ack)
+      _rpcPromiseMap.delete(ack)
     }
   }
 
@@ -448,8 +538,37 @@ export function createBirpcGroup<RemoteFunctions = Record<string, unknown>, Loca
   const getChannels = () => typeof channels === 'function' ? channels() : channels
   const getClients = (channels = getChannels()) => cachedMap(channels, s => createBirpc(functions, { ...options, ...s }))
 
+  function _boardcast(
+    method: string,
+    args: unknown[],
+    event?: boolean,
+    optional?: boolean,
+  ) {
+    const clients = getClients()
+    return Promise.all(clients.map(c => c.$callRaw({ method, args, event, optional })))
+  }
+
+  function $call(method: string, ...args: ArgumentsType<RemoteFunctions[keyof RemoteFunctions]>) {
+    return _boardcast(method, args, false)
+  }
+  function $callOptional(method: string, ...args: ArgumentsType<RemoteFunctions[keyof RemoteFunctions]>) {
+    return _boardcast(method, args, false, true)
+  }
+  function $callEvent(method: string, ...args: ArgumentsType<RemoteFunctions[keyof RemoteFunctions]>) {
+    return _boardcast(method, args, true)
+  }
+
+  const broadcastBuiltin = {
+    $call,
+    $callOptional,
+    $callEvent,
+  }
+
   const broadcastProxy = new Proxy({}, {
     get(_, method) {
+      if (Object.prototype.hasOwnProperty.call(broadcastBuiltin, method))
+        return (broadcastBuiltin as any)[method]
+
       const client = getClients()
       const callbacks = client.map(c => (c as any)[method])
       const sendCall = (...args: any[]) => {

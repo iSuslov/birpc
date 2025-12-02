@@ -45,11 +45,48 @@ it('basic', async () => {
   expect(Bob.getCount()).toBe(0)
   await new Promise(resolve => setTimeout(resolve, 1))
   expect(Bob.getCount()).toBe(1)
+
+  expect(await alice.bumpWithReturn()).toBe(2)
+  expect(Bob.getCount()).toBe(2)
+
+  expect(await alice.bumpWithReturn.asEvent()).toBeUndefined()
+  await new Promise(resolve => setTimeout(resolve, 1))
+  expect(Bob.getCount()).toBe(3)
 })
 
-it('async', async () => {
+it('await on birpc should not throw error', async () => {
   const { bob, alice } = createChannel()
 
   await alice
   await bob
+})
+
+it('$call', async () => {
+  const { bob, alice } = createChannel()
+
+  // RPCs
+  expect(await bob.$call('hello', 'Bob'))
+    .toEqual('Hello Bob, my name is Alice')
+  expect(await alice.$call('hi', 'Alice'))
+    .toEqual('Hi Alice, I am Bob')
+
+  // one-way event
+  expect(await alice.$callEvent('bump')).toBeUndefined()
+
+  expect(Bob.getCount()).toBe(3)
+  await new Promise(resolve => setTimeout(resolve, 1))
+  expect(Bob.getCount()).toBe(4)
+})
+
+it('$callOptional', async () => {
+  const { bob } = createChannel()
+
+  // @ts-expect-error `hello2` is not defined
+  await expect(async () => await bob.$call('hello2', 'Bob'))
+    .rejects
+    .toThrow('[birpc] function "hello2" not found')
+
+  // @ts-expect-error `hello2` is not defined
+  expect(await bob.$callOptional('hello2', 'Bob'))
+    .toEqual(undefined)
 })
